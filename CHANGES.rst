@@ -1,6 +1,18 @@
 CHANGES
 =======
 
+1.23.0 (2021-01-29)
+-------------------
+
+- List of submodules is retrieved via git instead of parsing .gitmodules. See #85
+
+1.22.0 (2020-08-04)
+-------------------
+
+- Fixed the --no-exclude flag. See #82
+- --no-exclude -> --no-export-ignore (backward compatibility is retained)
+- --extra -> --include (backward compatibility is retained)
+
 1.21.0 (2020-02-11)
 -------------------
 

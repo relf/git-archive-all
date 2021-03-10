@@ -32,7 +32,7 @@ from subprocess import CalledProcessError, Popen, PIPE
 import sys
 import re
 
-__version__ = "1.21.0"
+__version__ = "1.23.0"
 
 
 try:
@@ -272,6 +272,9 @@ class GitArchiver(object):
 
         @return: True if file should be excluded. Otherwise False.
         """
+        if not self.exclude:
+            return False
+
         cache = self._ignored_paths_cache.setdefault(repo_abspath, {})
 
         if repo_file_path not in cache:
@@ -342,30 +345,19 @@ class GitArchiver(object):
                 self.run_git_shell('git submodule init', repo_abspath)
                 self.run_git_shell('git submodule update', repo_abspath)
 
-            try:
-                repo_gitmodules_abspath = path.join(repo_abspath, fspath(".gitmodules"))
+            for repo_submodule_path in self.list_repo_submodules(repo_abspath):  # relative to repo_path
+                if self.is_file_excluded(repo_abspath, repo_submodule_path):
+                    continue
 
-                with open(repo_gitmodules_abspath) as f:
-                    lines = f.readlines()
+                main_repo_submodule_path = path.join(repo_path, repo_submodule_path)  # relative to main_repo_abspath
 
-                for l in lines:
-                    m = re.match("^\\s*path\\s*=\\s*(.*)\\s*$", l)
+                for main_repo_submodule_file_path in self.walk_git_files(main_repo_submodule_path):
+                    repo_submodule_file_path = path.relpath(main_repo_submodule_file_path, repo_path)  # relative to repo_path
 
-                    if m:
-                        repo_submodule_path = fspath(m.group(1))  # relative to repo_path
-                        main_repo_submodule_path = path.join(repo_path, repo_submodule_path)  # relative to main_repo_abspath
+                    if self.is_file_excluded(repo_abspath, repo_submodule_file_path):
+                        continue
 
-                        if self.is_file_excluded(repo_abspath, repo_submodule_path):
-                            continue
-
-                        for main_repo_submodule_file_path in self.walk_git_files(main_repo_submodule_path):
-                            repo_submodule_file_path = path.relpath(main_repo_submodule_file_path, repo_path)  # relative to repo_path
-                            if self.is_file_excluded(repo_abspath, repo_submodule_file_path):
-                                continue
-
-                            yield main_repo_submodule_file_path
-            except IOError:
-                pass
+                    yield main_repo_submodule_file_path
         finally:
             self._check_attr_gens[repo_abspath].close()
             del self._check_attr_gens[repo_abspath]
@@ -535,6 +527,9 @@ class GitArchiver(object):
 
     @classmethod
     def list_repo_files(cls, repo_abspath):
+        """
+        Return a list of all files as seen by git in a given repo.
+        """
         repo_file_paths = cls.run_git_shell(
             'git ls-files -z --cached --full-name --no-empty-directory',
             cwd=repo_abspath
@@ -548,6 +543,29 @@ class GitArchiver(object):
 
         return repo_file_paths
 
+    @classmethod
+    def list_repo_submodules(cls, repo_abspath):
+        """
+        Return a list of all direct submodules as seen by git in a given repo.
+        """
+        if sys.platform.startswith('win32'):
+            shell_command = 'git submodule foreach --quiet "\\"{0}\\" -c \\"from __future__ import print_function; print(\'"$sm_path"\', end=chr(0))\\""'
+        else:
+            shell_command = 'git submodule foreach --quiet \'"{0}" -c "from __future__ import print_function; print(\\"$sm_path\\", end=chr(0))"\''
+
+        python_exe = sys.executable or 'python'
+        shell_command = shell_command.format(python_exe)
+
+        repo_submodule_paths = cls.run_git_shell(shell_command, cwd=repo_abspath)
+        repo_submodule_paths = repo_submodule_paths.split(b'\0')[:-1]
+
+        if sys.platform.startswith('win32'):
+            repo_submodule_paths = (git_fspath(p.replace(b'/', b'\\')) for p in repo_submodule_paths)
+        else:
+            repo_submodule_paths = map(git_fspath, repo_submodule_paths)
+
+        return repo_submodule_paths
+
 
 def main(argv=None):
     if argv is None:
@@ -556,8 +574,8 @@ def main(argv=None):
     from optparse import OptionParser, SUPPRESS_HELP
 
     parser = OptionParser(
-        usage="usage: %prog [-v] [-C BASE_REPO] [--prefix PREFIX] [--no-exclude]"
-              " [--force-submodules] [--extra EXTRA1 ...] [--dry-run] [-0 | ... | -9] OUTPUT_FILE",
+        usage="usage: %prog [-v] [-C BASE_REPO] [--prefix PREFIX] [--no-export-ignore]"
+              " [--force-submodules] [--include EXTRA1 ...] [--dry-run] [-0 | ... | -9] OUTPUT_FILE",
         version="%prog {0}".format(__version__)
     )
 
@@ -580,7 +598,7 @@ def main(argv=None):
                       dest='verbose',
                       help='enable verbose mode')
 
-    parser.add_option('--no-exclude',
+    parser.add_option('--no-export-ignore', '--no-exclude',
                       action='store_false',
                       dest='exclude',
                       default=True,
@@ -591,7 +609,7 @@ def main(argv=None):
                       dest='force_sub',
                       help='force `git submodule init && git submodule update` at each level before iterating submodules')
 
-    parser.add_option('--extra',
+    parser.add_option('--include', '--extra',
                       action='append',
                       dest='extra',
                       default=[],
